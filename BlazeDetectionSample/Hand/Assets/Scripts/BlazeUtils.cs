@@ -87,21 +87,25 @@ public static class BlazeUtils
         return (v + div - 1) / div;
     }
 
-    public static void SampleImageAffine(Texture srcTexture, Tensor<float> dstTensor, float2x3 M)
+    public static void SampleImageAffine(Texture srcTexture, Tensor<float> dstTensor, float2x3 M) // transforms srcTexture by M and writes result into dstTensor
     {
-        var tensorData = ComputeTensorData.Pin(dstTensor, false);
+        // TODO: rewrite to not use transform shader; could use Unity Jobs + Burst? but try CPU first & see how slow it is
 
+        // pin a GPU buffer with write permission
+        var tensorData = ComputeTensorData.Pin(dstTensor, false);
+        // assign input texture & output buffer to corresponding shader property fields
         s_ImageTransformShader.SetTexture(s_ImageSample, s_X_tex2D, srcTexture);
         s_ImageTransformShader.SetBuffer(s_ImageSample, s_Optr, tensorData.buffer);
-
+        // assign output tensor dimensions to corresponding shader property fields
         s_ImageTransformShader.SetInt(s_O_height, dstTensor.shape[1]);
         s_ImageTransformShader.SetInt(s_O_width, dstTensor.shape[2]);
         s_ImageTransformShader.SetInt(s_O_channels, dstTensor.shape[3]);
+        // assign input texture dimensions to corresponding shader property fields
         s_ImageTransformShader.SetInt(s_X_height, srcTexture.height);
         s_ImageTransformShader.SetInt(s_X_width, srcTexture.width);
-
+        // pass (assign as property) transformation matrix to shader
         s_ImageTransformShader.SetMatrix(s_affineMatrix, new Matrix4x4(new Vector4(M[0][0], M[0][1]), new Vector4(M[1][0], M[1][1]), new Vector4(M[2][0], M[2][1]), Vector4.zero));
-
+        // compute with 8x8 thread groups
         s_ImageTransformShader.Dispatch(s_ImageSample, IDivC(dstTensor.shape[1], 8), IDivC(dstTensor.shape[1], 8), 1);
     }
 
