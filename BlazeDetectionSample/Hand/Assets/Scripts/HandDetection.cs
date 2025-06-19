@@ -8,6 +8,7 @@ public class HandDetection : MonoBehaviour
     public HandPreview handPreview;
     public ImagePreview imagePreview;
     public Texture2D imageTexture;
+    public WebCamTexture webcamTexture;
     public ModelAsset handDetector;
     public ModelAsset handLandmarker;
     public TextAsset anchorsCSV;
@@ -45,10 +46,10 @@ public class HandDetection : MonoBehaviour
         var idx_scores_boxes = BlazeUtils.ArgMaxFiltering(boxes, scores);
         handDetectorModel = graph.Compile(idx_scores_boxes.Item1, idx_scores_boxes.Item2, idx_scores_boxes.Item3);
 
-        m_HandDetectorWorker = new Worker(handDetectorModel, BackendType.GPUCompute);
+        m_HandDetectorWorker = new Worker(handDetectorModel, BackendType.CPU);
 
         var handLandmarkerModel = ModelLoader.Load(handLandmarker);
-        m_HandLandmarkerWorker = new Worker(handLandmarkerModel, BackendType.GPUCompute);
+        m_HandLandmarkerWorker = new Worker(handLandmarkerModel, BackendType.CPU);
 
         m_DetectorInput = new Tensor<float>(new TensorShape(1, detectorInputSize, detectorInputSize, 3));
         m_LandmarkerInput = new Tensor<float>(new TensorShape(1, landmarkerInputSize, landmarkerInputSize, 3));
@@ -57,7 +58,26 @@ public class HandDetection : MonoBehaviour
         {
             try
             {
-                m_DetectAwaitable = Detect(imageTexture);
+                //m_DetectAwaitable = Detect(imageTexture);
+                webcamTexture = new WebCamTexture();
+                webcamTexture.Play();
+
+                while (true)
+                {
+                    try
+                    {
+                        if (webcamTexture.didUpdateThisFrame)
+                        {
+                            m_DetectAwaitable = Detect(webcamTexture);
+                            await m_DetectAwaitable;
+                        }
+                        await Awaitable.NextFrameAsync();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
                 await m_DetectAwaitable;
             }
             catch (OperationCanceledException)
@@ -100,11 +120,31 @@ public class HandDetection : MonoBehaviour
         using var outputScore = await outputScoreAwaitable;
         using var outputBox = await outputBoxAwaitable;
 
+        //var outputIdxRaw = m_HandDetectorWorker.PeekOutput(0) as Tensor<int>;
+        //var outputScoreRaw = m_HandDetectorWorker.PeekOutput(1) as Tensor<float>;
+        //var outputBoxRaw = m_HandDetectorWorker.PeekOutput(2) as Tensor<float>;
+
+        //if (outputIdxRaw == null || outputScoreRaw == null || outputBoxRaw == null)
+        //{
+        //    Debug.LogWarning("One or more detector outputs were null");
+        //    return;
+        //}
+
+        //using var outputIdx = await outputIdxRaw.ReadbackAndCloneAsync();
+        //using var outputScore = await outputScoreRaw.ReadbackAndCloneAsync();
+        //using var outputBox = await outputBoxRaw.ReadbackAndCloneAsync();
+
+
         var scorePassesThreshold = outputScore[0] >= scoreThreshold;
         handPreview.SetActive(scorePassesThreshold);
 
         if (!scorePassesThreshold)
+        {
+            if (outputIdx != null) outputIdx.Dispose();
+            if (outputScore != null) outputScore.Dispose();
+            if (outputBox != null) outputBox.Dispose();
             return;
+        }
 
         var idx = outputIdx[0];
 
@@ -131,6 +171,13 @@ public class HandDetection : MonoBehaviour
 
         var landmarksAwaitable = (m_HandLandmarkerWorker.PeekOutput("Identity") as Tensor<float>).ReadbackAndCloneAsync();
         using var landmarks = await landmarksAwaitable;
+        //var landmarkRaw = m_HandLandmarkerWorker.PeekOutput("Identity") as Tensor<float>;
+        //if (landmarkRaw == null)
+        //{
+        //    Debug.LogWarning("Landmark output was null");
+        //    return;
+        //}
+        //using var landmarks = await landmarkRaw.ReadbackAndCloneAsync();
 
         for (var i = 0; i < k_NumKeypoints; i++)
         {
@@ -139,10 +186,21 @@ public class HandDetection : MonoBehaviour
             Vector3 position_WorldSpace = ImageToWorld(position_ImageSpace) + new Vector3(0, 0, landmarks[3 * i + 2] / m_TextureHeight);
             handPreview.SetKeypoint(i, true, position_WorldSpace);
         }
+        if (landmarks != null) landmarks.Dispose();
     }
 
     void OnDestroy()
     {
-        m_DetectAwaitable.Cancel();
+        try
+        {
+            if (!m_DetectAwaitable.IsCompleted)
+            {
+                m_DetectAwaitable.Cancel();
+            }
+        }
+        catch (InvalidOperationException) { }
+        m_HandLandmarkerWorker.Dispose();
+        m_HandDetectorWorker.Dispose();
+        webcamTexture?.Stop();
     }
 }
